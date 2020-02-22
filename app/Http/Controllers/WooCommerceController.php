@@ -5,7 +5,9 @@ namespace App\Http\Controllers;
 use DB;
 use App\Ical;
 use Woocommerce;
-use App\ProductDetails;
+use App\EventLineItem;
+use App\EventReservation;
+use App\BillingInformation;
 use Illuminate\Http\Request;
 
 class WooCommerceController extends Controller
@@ -19,15 +21,7 @@ class WooCommerceController extends Controller
      */
     public function index()
     {
-        // To filter the completed orders
-        // $data = [
-        //     'status' => 'completed',
-        //     'after' => '2016-01-14T00:00:00'
-        // ];
-        // $orders = Woocommerce::get('orders', $data);
-
-        // dd($orders);
-        return Woocommerce::get('orders');
+        return view('woocommerce');
     }
 
     /**
@@ -97,144 +91,106 @@ class WooCommerceController extends Controller
     }
 
     /**
-     * To auto sync the calender booking details
-     * return boolean
+     * To sync the reservation details
+     * return response
      */
     public function autoSync() {
-        $properties = ProductDetails::where('status', 1)->get(); // Active = 1
         try{
-            foreach($properties as $row) {
-                // echo "<pre>";
-                // print_r($row->property_id);
-                // print_r($row->ical_link);
-                $test = $this->icalFormatter($row);
-                //dd($test, 'final');
-
-            } 
+            $orders_details = Woocommerce::get('orders');   
+            foreach($orders_details as $order) {
+                $response  = $this->wooCommerceOrderDetails($order);
+            }
         } catch (ModelNotFoundException $exception) {
             return back()->withError($exception->getMessage());
         }
-        
-        echo 'Successfully Sync with tables'; exit;
-        // while($row = $properties) {
-        //     echo '<pre>';print_r($row);
-        // }exit;
-        // dd($properties);
+        echo 'Successfully Sync with tables';
     }
 
-    public function icalFormatter($property) {
-
-        $icalObj = new \ZCiCal();
-        $eventobj = new \ZCiCalNode("VEVENT ", $icalobj->curnode);
-
-        // Define default
-        $icalstring = file_get_contents($property->ical_link);
-        $icalobj = null;
-        $eventcount = 0;
-        $maxevents = 500;
-
+    /**
+     * To update or create reservation details
+     * @param $order
+     */
+    public function wooCommerceOrderDetails($order) {
         try {
-    	    $icalobj = new \ZCiCal($icalstring, $maxevents, $eventcount);
-    	}
-    	catch(Exception $e){
-    	    print_r("Exception".$e);
-        }
-        $eventcount +=$maxevents;
+            $last_insert_reservation_id = EventReservation::updateOrCreate(
+                [
+                    'first_name'  => $order['billing']['first_name'],
+                    'last_name'   => $order['billing']['last_name'],
+                    'gender'      => '',
+                    'company_name'=> $order['billing']['company'],
+                    'phone'       => $order['billing']['phone'],
+                    'email'       => $order['billing']['email'],
+                    'address'     => $order['billing']['address_1'].', ' . 
+                                                    $order['billing']['address_2']. ', ' . 
+                                                    $order['billing']['city']. ', ' . 
+                                                    $order['billing']['state']. ', ' . 
+                                                    $order['billing']['postcode']. ', ' . 
+                                                    $order['billing']['postcode'],
+                    'promo_code'            => '',
+                    'reservation_notes'     => $order['customer_note'],
+                    'tax_amount'            => $order['total'],
+                    'total_tax'             => $order['total_tax'],
+                    'total_discount'        => $order['discount_total'],
+                    'reservation_confirmed_status' => $order['status'],
+                    'reservation_date'      => date('Y-m-d', strtotime($order['date_created'])),
+                    'reservation_via'       => 'online'
+                ],
+                [
+                    'reservation_id'        => $order['id'],
+                    'status'                => 1
+                ]
+            );
+            $last_inserted_reservation = $last_insert_reservation_id->event_reservation_id;
+            $event_reservation = $this->eventRegistration($order, $last_inserted_reservation);
+            $billing_information = $this->billingInformation($order, $last_inserted_reservation);
 
-    foreach($icalobj->tree->child as $node)
-    {
-        $parentNode = $node->getParent();
-        if($parentNode->getName()=="VCALENDAR")
-        {
-            foreach($parentNode->data as $key => $value)
-            {
-                if($key == "X-MA-PROPERTY-ID" || $key == "X-MA-ROOM-ID" || $key == "X-MA-ROOM-LABEL")
-                {
-                    print_r("Key".$key."  ".$value->getValues());
-                   
-                }
+        } catch(ModelNotFoundException $exception) {
+            return back()->withError($exception->getMessage());
+        }
+        
+    }
+
+    /**
+     * To update or create event reservation details
+     * @param $order, $last_inserted_reservation
+     */
+    public function eventRegistration($order, $last_inserted_reservation) {
+        try {
+            foreach($order['line_items'] as $event) {
+                EventLineItem::updateOrCreate([
+                    'event_reservation_id'  => $last_inserted_reservation,
+                    'event_name'            => ($event['meta']) ? $event['meta'][0]['value'] : '',
+                    'event_categories'      => $event['name'],
+                    'number_of_person'      => '',
+                    'price_per_person'      => $event['price'],
+                    'total_price'           => $event['total']],
+                    [ 
+                        'event_quantity'    => '100', 
+                        'event_categories'  => 0  
+                    ]
+                );
             }
+        } catch(ModelNotFoundException $exception) {
+            return back()->withError($exception->getMessage());
         }
+    }
 
-    	if($node->getName() == "VEVENT")
-    	{
-    	    $startdate=date('Y-m-d');
-    	    $enddate=date('Y-m-d');
-    	    $roomid="";
-    		foreach($node->data as $key => $value)
-    		{
-    			if($key == "SUMMARY")
-    			{
-    			    $roomid=$value->getValues();
-    				foreach($value->getParameters() as $key1 => $value1)
-    				{
-    				    print_r("event parameter".$value1);
-    				}
-    			}
-    			else if($key == "DTSTART")
-    			{
-    			    $startdate=$value->getValues();
-    			    $startdate = str_replace('T', '', $startdate);//remove T
-                    $startdate = str_replace('Z', '', $startdate);//remove Z
-                    $d    = date('d', strtotime($startdate));//get date day
-                    $m    = date('m', strtotime($startdate));//get date month
-                    $y    = date('Y', strtotime($startdate));//get date year
-                    //$now = date('Y-m-d G:i:s');//current date and time
-                    $startdate = date('Y-m-d', strtotime($startdate));//user friendly date
-    			    //echo "event start date: ".$startdate;
-    			       
-    			}
-    			else if($key == "DTEND")
-    			{
-    			    $enddate=$value->getValues();
-    			    $enddate = str_replace('T', '', $enddate);//remove T
-                    $enddate = str_replace('Z', '', $enddate);//remove Z
-                    $d    = date('d', strtotime($enddate));//get date day
-                    $m    = date('m', strtotime($enddate));//get date month
-                    $y    = date('Y', strtotime($enddate));//get date year
-                    //$now = date('Y-m-d G:i:s');//current date and time
-                    $enddate = date('Y-m-d', strtotime($enddate));//user friendly date
-    			    //echo "event end date: ".$enddate;
-    			    
-    			}
-    			else
-    			{
-    			    //print_r("   event non: ".$key);
-    			}
-    		}
-    		$date = $startdate;
-    		while (strtotime($date) <= strtotime($enddate)) {
-
-                $isExistDate = DB::table('occupancy_info')
-                                    ->where(['property_id' => $property->property_id])
-                                    ->get();
-                
-                if ($isExistDate) {
-                    foreach($isExistDate as $rowDate) {
-                        $checkDataExist = DB::table('occupancy_info')
-                            ->where(
-                                [
-                                    'property_id' => $property->property_id,
-                                    'date' => $rowDate->date
-                                ]
-                            )->get();
-                            if(!$checkDataExist) {
-                                DB::table('occupancy_info')
-                                    ->where('id', $property->property_id)
-                                    ->update(['status' => 0]);
-                            }
-                    }
-                }
-                DB::table('occupancy_info')
-                                ->updateOrInsert(
-                                    ['property_id' => $property->property_id, 'date'=> $date ],
-                                    ['property_rent_id'=> 1, 'rent' => '', 'occupancy_status' => 1, 'status'=> 1 ]
-                                );
-               
-                //echo '<p>'.$roomid.'***'.'Date:'.$date.'propertyId'.$property->property_id.'</p>';
-                $date = date ("Y-m-d", strtotime("+1 day", strtotime($date)));
-	        }
-    	}
-    } 
+    /**
+     *  To update or create billing details
+     * @param $order, $last_inserted_reservation
+     */
+    public function billingInformation($order, $last_inserted_reservation) {
+        try {
+            BillingInformation::updateOrCreate([
+                'event_reservation_id'    => $last_inserted_reservation,
+                'payment_method'          => $order['payment_method'],
+                'payment_reference'       => $order['transaction_id'],
+                'payment_date'            => date('Y-m-d', strtotime($order['date_paid']))    
+            ],
+                ['status'                 => 0]
+            );
+        } catch(ModelNotFoundException $exception) {
+            return back()->withError($exception->getMessage());
+        }
     }
 }

@@ -20,4 +20,4 @@ Route::get('ical', 'IcalController@index')->name('ical');
 Route::get('ical/sync', 'IcalController@autoSync')->name('autoSync');
 
 Route::get('woo-commerce', 'WooCommerceController@index');
-// Route::get('woo-commerce', 'WooCommerceController@index');
+Route::get('woo-commerce/sync', 'WooCommerceController@autoSync');

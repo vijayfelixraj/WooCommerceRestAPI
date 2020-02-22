@@ -37,10 +37,10 @@
             <div class="content">
             <div class="clear-fix"></div>
                 <div class="title m-b-md">
-                    Woo commerce page
+                    WooCommerce page
                 </div>
                 <div class="container">
-                    <a href="{{ url('') }}">Click Here to fetch the details</a>
+                    <a href="{{ url('woo-commerce/sync') }}">Click Here to fetch the order details</a>
                 </div>
             </div>
         </div>
